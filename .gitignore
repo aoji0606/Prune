@@ -1,0 +1,12 @@
+*.npy
+*.pth
+*.pt
+
+
+.ipynb_checkpoints/
+checkpoints/
+__pycache__/
+logs/
+.idea/
+.vscode/
+
