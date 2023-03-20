@@ -27,8 +27,6 @@ model_names = sorted(
     if name.islower() and not name.startswith("__") and callable(models.__dict__[name])
 )
 
-best_acc1 = 0
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PyTorch ImageNet Training")
@@ -117,6 +115,17 @@ def parse_args():
         help="evaluate model on validation set",
     )
     parser.add_argument(
+        "--pretrained", default="", type=str, help="path to pretrained checkpoint"
+    )
+    parser.add_argument(
+        "--data-path", default="", type=str, metavar="DIR", help="path to dataset"
+    )
+    parser.add_argument(
+        "--save-path", default="", type=str, help="path to save checkpoint"
+    )
+
+    # distribute
+    parser.add_argument(
         "--world-size",
         default=-1,
         type=int,
@@ -146,15 +155,6 @@ def parse_args():
              "fastest way to use PyTorch for either single node or "
              "multi node data parallel training",
     )
-    parser.add_argument(
-        "--pretrained", default="", type=str, help="path to pretrained checkpoint"
-    )
-    parser.add_argument(
-        "--data-path", default="", type=str, metavar="DIR", help="path to dataset"
-    )
-    parser.add_argument(
-        "--save-path", default="", type=str, help="path to save checkpoint"
-    )
 
     # prune
     parser.add_argument(
@@ -173,8 +173,16 @@ def parse_args():
     parser.add_argument(
         "--prune-rate", default=0.5, type=float, help="rm channel rate for prune"
     )
+    parser.add_argument(
+        "--pruned-model",
+        action="store_true",
+        help="load original pruned model",
+    )
 
     return parser.parse_args()
+
+
+best_acc1 = 0
 
 
 def main():
@@ -248,11 +256,15 @@ def main_worker(gpu, ngpus_per_node, args):
         )
 
     # create model
-    print("=> creating model '{}'".format(args.arch))
-    model = models.__dict__[args.arch]()
+    if args.pruned_model:
+        print("=> load pruned model")
+        model = torch.load(args.pretrained, map_location="cpu")
+    else:
+        print("=> creating model '{}'".format(args.arch))
+        model = models.__dict__[args.arch]()
 
     # load from pre-trained, before DistributedDataParallel constructor
-    if args.pretrained:
+    if args.pretrained and not args.pruned_model:
         if os.path.isfile(args.pretrained):
             args.start_epoch = 0
             print("=> loading checkpoint '{}'".format(args.pretrained))
@@ -272,14 +284,11 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> do finetune")
 
     if args.sparse_train:
-        if args.prune:
-            print("=> after prune, do not sparse train")
-            exit()
-
         print("=> do sparse train")
         print("=> reg:", args.reg)
 
     if args.distributed:
+        print("=> use DDP")
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
@@ -299,10 +308,13 @@ def main_worker(gpu, ngpus_per_node, args):
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
+
     elif args.gpu is not None:
+        print("=> use gpu id:", args.gpu)
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
     else:
+        print("=> use DP")
         # DataParallel will divide and allocate batch_size to all available GPUs
         if args.arch.startswith("alexnet") or args.arch.startswith("vgg"):
             model.features = torch.nn.DataParallel(model.features)
@@ -415,16 +427,21 @@ def main_worker(gpu, ngpus_per_node, args):
         best_acc1 = max(acc1, best_acc1)
 
         if not args.multiprocessing_distributed or (
-                args.multiprocessing_distributed and args.rank % ngpus_per_node == 0
+                args.multiprocessing_distributed and dist.get_rank() == 0
         ):
-            save_checkpoint(
-                {
+            if args.prune:
+                state = model.module if args.multiprocessing_distributed else model
+            else:
+                state = {
                     "epoch": epoch + 1,
                     "arch": args.arch,
                     "state_dict": model.state_dict(),
                     "best_acc1": best_acc1,
                     "optimizer": optimizer.state_dict(),
-                },
+                }
+
+            save_checkpoint(
+                state,
                 is_best,
                 args
             )
@@ -538,6 +555,7 @@ def save_checkpoint(state, is_best, args):
 
     if is_best:
         shutil.copyfile(file_name, os.path.join(args.save_path, "best_" + base_name))
+        print("=> save best")
 
 
 class AverageMeter(object):
