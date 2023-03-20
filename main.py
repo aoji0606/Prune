@@ -263,6 +263,8 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
 
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
     # load from pre-trained, before DistributedDataParallel constructor
     if args.pretrained and not args.pruned_model:
         if os.path.isfile(args.pretrained):
