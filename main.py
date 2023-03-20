@@ -287,6 +287,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> do sparse train")
         print("=> reg:", args.reg)
 
+    model_without_dist = None
     if args.distributed:
         print("=> use DDP")
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -308,7 +309,7 @@ def main_worker(gpu, ngpus_per_node, args):
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
-
+        model_without_dist = model.module
     elif args.gpu is not None:
         print("=> use gpu id:", args.gpu)
         torch.cuda.set_device(args.gpu)
@@ -321,6 +322,7 @@ def main_worker(gpu, ngpus_per_node, args):
             model.cuda()
         else:
             model = torch.nn.DataParallel(model).cuda()
+        model_without_dist = model.module
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
@@ -430,7 +432,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 args.multiprocessing_distributed and dist.get_rank() == 0
         ):
             if args.prune:
-                state = model.module if args.multiprocessing_distributed else model
+                state = model_without_dist if (model_without_dist is not None) else model
             else:
                 state = {
                     "epoch": epoch + 1,
@@ -633,8 +635,8 @@ def prune(model, prune_rate):
     # 重要性准则
     # imp = tp.importance.MagnitudeImportance(p=1, group_reduction='mean')
     # imp = tp.importance.MagnitudeImportance(p=2, group_reduction='mean')
-    imp = tp.importance.BNScaleImportance()
-    # imp = tp.importance.GroupNormImportance(p=2)
+    # imp = tp.importance.BNScaleImportance()
+    imp = tp.importance.GroupNormImportance(p=2)
 
     # 不剪枝的层
     ignored_layers = []
