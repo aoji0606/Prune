@@ -256,8 +256,6 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
 
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
     # load from pre-trained, before DistributedDataParallel constructor
     if args.pretrained and not args.pruned_model:
         if os.path.isfile(args.pretrained):
@@ -277,6 +275,8 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> prune rate:", args.prune_rate)
         model = prune(model, args.prune_rate)
         print("=> do finetune")
+
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     if args.sparse_train:
         print("=> do sparse train")
@@ -356,10 +356,9 @@ def main_worker(gpu, ngpus_per_node, args):
     # Data loading code
     if args.dali:
         train_loader = get_dali_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
-        val_loader = get_dali_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
     else:
         train_loader, train_sampler = get_torch_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
-        val_loader = get_torch_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
+    val_loader = get_torch_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
@@ -403,7 +402,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if args.dali:
             train_loader.reset()
-            val_loader.reset()
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -513,53 +511,27 @@ def validate(val_loader, model, criterion, args):
     with torch.no_grad():
         end = time.time()
 
-        if args.dali:
-            for i, data in enumerate(val_loader):
-                images = data[0]["data"]
-                target = data[0]["label"].squeeze().long()
+        for i, (images, target) in enumerate(val_loader):
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+                target = target.cuda(args.gpu, non_blocking=True)
 
-                if args.gpu is not None:
-                    images = images.cuda(non_blocking=True)
-                    target = target.cuda(non_blocking=True)
+            # compute output
+            output = model(images)
+            loss = criterion(output, target)
 
-                # compute output
-                output = model(images)
-                loss = criterion(output, target)
+            # measure accuracy and record loss
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            losses.update(loss.item(), images.size(0))
+            top1.update(acc1[0], images.size(0))
+            top5.update(acc5[0], images.size(0))
 
-                # measure accuracy and record loss
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                losses.update(loss.item(), images.size(0))
-                top1.update(acc1[0], images.size(0))
-                top5.update(acc5[0], images.size(0))
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-                end = time.time()
-
-                if i % args.print_freq == 0:
-                    progress.display(i)
-        else:
-            for i, (images, target) in enumerate(val_loader):
-                if args.gpu is not None:
-                    images = images.cuda(args.gpu, non_blocking=True)
-                    target = target.cuda(args.gpu, non_blocking=True)
-
-                # compute output
-                output = model(images)
-                loss = criterion(output, target)
-
-                # measure accuracy and record loss
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                losses.update(loss.item(), images.size(0))
-                top1.update(acc1[0], images.size(0))
-                top5.update(acc5[0], images.size(0))
-
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-                end = time.time()
-
-                if i % args.print_freq == 0:
-                    progress.display(i)
+            if i % args.print_freq == 0:
+                progress.display(i)
 
         # TODO: this should also be done with the ProgressMeter
         print(
