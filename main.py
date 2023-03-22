@@ -12,11 +12,10 @@ import torch.nn.parallel
 import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.datasets as datasets
 import torchvision.models as models
-import torchvision.transforms as transforms
 
 import torch_pruning as tp
+from dali import get_dali_dataloader, get_torch_dataloader
 from utils import *
 
 model_names = sorted(
@@ -123,6 +122,9 @@ def parse_args():
     parser.add_argument(
         "--save-path", default="", type=str, help="path to save checkpoint"
     )
+    parser.add_argument(
+        "--dali", action="store_true", help="use dali dataloader",
+    )
 
     # distribute
     parser.add_argument(
@@ -158,25 +160,19 @@ def parse_args():
 
     # prune
     parser.add_argument(
-        "--sparse-train",
-        action="store_true",
-        help="sparse training",
+        "--sparse-train", action="store_true", help="sparse training",
     )
     parser.add_argument(
         "--reg", default=1e-5, type=float, help="reg for l1"
     )
     parser.add_argument(
-        "--prune",
-        action="store_true",
-        help="prune for model",
+        "--prune", action="store_true", help="prune for model",
     )
     parser.add_argument(
         "--prune-rate", default=0.5, type=float, help="rm channel rate for prune"
     )
     parser.add_argument(
-        "--pruned-model",
-        action="store_true",
-        help="load original pruned model",
+        "--pruned-model", action="store_true", help="load original pruned model",
     )
 
     return parser.parse_args()
@@ -358,63 +354,21 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data_path, "ILSVRC2012_img_train")
-    valdir = os.path.join(args.data_path, "ILSVRC2012_img_val")
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-    )
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose(
-            [
-                transforms.RandomResizedCrop(224),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        ),
-    )
-
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    if args.dali:
+        train_loader = get_dali_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
+        val_loader = get_dali_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
     else:
-        train_sampler = None
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=(train_sampler is None),
-        num_workers=args.workers,
-        pin_memory=True,
-        sampler=train_sampler,
-    )
-
-    val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(
-            valdir,
-            transforms.Compose(
-                [
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    normalize,
-                ]
-            ),
-        ),
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=True,
-    )
+        train_loader, train_sampler = get_torch_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
+        val_loader = get_torch_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
         return
 
     for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
+        if args.distributed and (not args.dali):
             train_sampler.set_epoch(epoch)
+
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
@@ -447,6 +401,10 @@ def main_worker(gpu, ngpus_per_node, args):
                 args
             )
 
+        if args.dali:
+            train_loader.reset()
+            val_loader.reset()
+
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter("Time", ":6.3f")
@@ -461,43 +419,83 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     )
 
     model.train()
-
     end = time.time()
-    for i, (images, target) in enumerate(train_loader):
-        # measure data loading time
-        data_time.update(time.time() - end)
 
-        if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+    if args.dali:
+        for i, data in enumerate(train_loader):
+            # measure data loading time
+            data_time.update(time.time() - end)
 
-        # compute output
-        output = model(images)
-        loss = criterion(output, target)
+            images = data[0]["data"]
+            target = data[0]["label"].squeeze().long()
 
-        # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-        losses.update(loss.item(), images.size(0))
-        top1.update(acc1[0], images.size(0))
-        top5.update(acc5[0], images.size(0))
+            if args.gpu is not None:
+                images = images.cuda(non_blocking=True)
+                target = target.cuda(non_blocking=True)
 
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
+            # compute output
+            output = model(images)
+            loss = criterion(output, target)
 
-        if args.sparse_train:
-            for m in model.modules():
-                if isinstance(m, nn.BatchNorm2d):
-                    m.weight.grad.data.add_(args.reg * torch.sign(m.weight.data))
+            # measure accuracy and record loss
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            losses.update(loss.item(), images.size(0))
+            top1.update(acc1[0], images.size(0))
+            top5.update(acc5[0], images.size(0))
 
-        optimizer.step()
+            # compute gradient and do SGD step
+            optimizer.zero_grad()
+            loss.backward()
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            if args.sparse_train:
+                for m in model.modules():
+                    if isinstance(m, nn.BatchNorm2d):
+                        m.weight.grad.data.add_(args.reg * torch.sign(m.weight.data))
 
-        if i % args.print_freq == 0:
-            progress.display(i)
+            optimizer.step()
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % args.print_freq == 0:
+                progress.display(i)
+    else:
+        for i, (images, target) in enumerate(train_loader):
+            # measure data loading time
+            data_time.update(time.time() - end)
+
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+                target = target.cuda(args.gpu, non_blocking=True)
+
+            # compute output
+            output = model(images)
+            loss = criterion(output, target)
+
+            # measure accuracy and record loss
+            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            losses.update(loss.item(), images.size(0))
+            top1.update(acc1[0], images.size(0))
+            top5.update(acc5[0], images.size(0))
+
+            # compute gradient and do SGD step
+            optimizer.zero_grad()
+            loss.backward()
+
+            if args.sparse_train:
+                for m in model.modules():
+                    if isinstance(m, nn.BatchNorm2d):
+                        m.weight.grad.data.add_(args.reg * torch.sign(m.weight.data))
+
+            optimizer.step()
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % args.print_freq == 0:
+                progress.display(i)
 
 
 def validate(val_loader, model, criterion, args):
@@ -514,27 +512,54 @@ def validate(val_loader, model, criterion, args):
 
     with torch.no_grad():
         end = time.time()
-        for i, (images, target) in enumerate(val_loader):
-            if args.gpu is not None:
-                images = images.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
 
-            # compute output
-            output = model(images)
-            loss = criterion(output, target)
+        if args.dali:
+            for i, data in enumerate(val_loader):
+                images = data[0]["data"]
+                target = data[0]["label"].squeeze().long()
 
-            # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-            losses.update(loss.item(), images.size(0))
-            top1.update(acc1[0], images.size(0))
-            top5.update(acc5[0], images.size(0))
+                if args.gpu is not None:
+                    images = images.cuda(non_blocking=True)
+                    target = target.cuda(non_blocking=True)
 
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+                # compute output
+                output = model(images)
+                loss = criterion(output, target)
 
-            if i % args.print_freq == 0:
-                progress.display(i)
+                # measure accuracy and record loss
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                losses.update(loss.item(), images.size(0))
+                top1.update(acc1[0], images.size(0))
+                top5.update(acc5[0], images.size(0))
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                if i % args.print_freq == 0:
+                    progress.display(i)
+        else:
+            for i, (images, target) in enumerate(val_loader):
+                if args.gpu is not None:
+                    images = images.cuda(args.gpu, non_blocking=True)
+                    target = target.cuda(args.gpu, non_blocking=True)
+
+                # compute output
+                output = model(images)
+                loss = criterion(output, target)
+
+                # measure accuracy and record loss
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                losses.update(loss.item(), images.size(0))
+                top1.update(acc1[0], images.size(0))
+                top5.update(acc5[0], images.size(0))
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                if i % args.print_freq == 0:
+                    progress.display(i)
 
         # TODO: this should also be done with the ProgressMeter
         print(
