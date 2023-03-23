@@ -276,6 +276,7 @@ def main_worker(gpu, ngpus_per_node, args):
         model = prune(model, args.prune_rate)
         print("=> do finetune")
 
+    # use sync_bn after prune
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     if args.sparse_train:
@@ -356,8 +357,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # Data loading code
     if args.dali:
         train_loader = get_dali_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
+        # val_loader = get_dali_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
     else:
         train_loader, train_sampler = get_torch_dataloader('train', args.data_path, args.batch_size, args.workers, 224)
+        # val_loader = get_torch_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
     val_loader = get_torch_dataloader('val', args.data_path, args.batch_size, args.workers, 224)
 
     if args.evaluate:
@@ -402,6 +405,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if args.dali:
             train_loader.reset()
+            # val_loader.reset()
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -510,7 +514,6 @@ def validate(val_loader, model, criterion, args):
 
     with torch.no_grad():
         end = time.time()
-
         for i, (images, target) in enumerate(val_loader):
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)

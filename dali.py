@@ -23,7 +23,7 @@ class HybridTrainPipe(Pipeline):
 
         self.input = ops.FileReader(file_root=data_dir, shard_id=rank, num_shards=world_size, random_shuffle=True)
         self.decode = ops.ImageDecoder(device="mixed", output_type=types.RGB)
-        self.resize = ops.RandomResizedCrop(device="gpu", size=(crop, crop), random_area=[0.08, 1.0])
+        self.resize = ops.RandomResizedCrop(device="gpu", size=(crop, crop), random_area=[0.08, 1.25])
         self.cmnp = ops.CropMirrorNormalize(device="gpu",
                                             output_dtype=types.FLOAT,
                                             output_layout=types.NCHW,
@@ -46,14 +46,14 @@ class HybridValPipe(Pipeline):
     def __init__(self, batch_size, num_threads, device_id, data_dir, crop, val_size):
         super(HybridValPipe, self).__init__(batch_size, num_threads, device_id, seed=12 + device_id)
 
-        if torch.distributed.is_initialized():
-            rank = torch.distributed.get_rank()
-            world_size = torch.distributed.get_world_size()
-        else:
-            rank = 0
-            world_size = 1
+        # if torch.distributed.is_initialized():
+        #     rank = torch.distributed.get_rank()
+        #     world_size = torch.distributed.get_world_size()
+        # else:
+        #     rank = 0
+        #     world_size = 1
 
-        self.input = ops.FileReader(file_root=data_dir, shard_id=rank, num_shards=world_size, random_shuffle=False)
+        self.input = ops.FileReader(file_root=data_dir, shard_id=0, num_shards=1, random_shuffle=False)
         self.decode = ops.ImageDecoder(device="mixed", output_type=types.RGB)
         self.resize = ops.Resize(device="gpu", resize_shorter=val_size, interp_type=types.INTERP_TRIANGULAR)
         self.cmnp = ops.CropMirrorNormalize(device="gpu",
