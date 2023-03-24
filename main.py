@@ -276,9 +276,6 @@ def main_worker(gpu, ngpus_per_node, args):
         model = prune(model, args.prune_rate)
         print("=> do finetune")
 
-    # use sync_bn after prune
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
     if args.sparse_train:
         print("=> do sparse train")
         print("=> reg:", args.reg)
