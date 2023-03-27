@@ -500,7 +500,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
             # compute gradient and do SGD step
             optimizer.zero_grad()
-            loss.backward()
+            
+            if args.apex:
+                with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
 
             if args.sparse_train:
                 for m in model.modules():
