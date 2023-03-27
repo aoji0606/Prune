@@ -14,6 +14,8 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.models as models
 
+import apex
+
 import torch_pruning as tp
 from dali import get_dali_dataloader, get_torch_dataloader
 from utils import *
@@ -124,6 +126,9 @@ def parse_args():
     )
     parser.add_argument(
         "--dali", action="store_true", help="use dali dataloader",
+    )
+    parser.add_argument(
+        "--apex", action="store_true", help="use apex",
     )
 
     # distribute
@@ -280,6 +285,16 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> do sparse train")
         print("=> reg:", args.reg)
 
+    optimizer = torch.optim.SGD(
+        model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay
+    )
+
+    if args.apex:
+        apex.amp.register_float_function(torch, 'sigmoid')
+        apex.amp.register_float_function(torch, 'softmax')
+        model.cuda()
+        model, optimizer = apex.amp.initialize(model, optimizer)
+
     model_without_dist = None
     if args.distributed:
         print("=> use DDP")
@@ -294,14 +309,18 @@ def main_worker(gpu, ngpus_per_node, args):
             # ourselves based on the total number of GPUs we have
             args.batch_size = int(args.batch_size / ngpus_per_node)
             args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-            model = torch.nn.parallel.DistributedDataParallel(
-                model, device_ids=[args.gpu]
-            )
+            if args.apex:
+                model = apex.parallel.DistributedDataParallel(model)
+            else:
+                model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         else:
             model.cuda()
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
-            model = torch.nn.parallel.DistributedDataParallel(model)
+            if args.apex:
+                model = apex.parallel.DistributedDataParallel(model)
+            else:
+                model = torch.nn.parallel.DistributedDataParallel(model)
         model_without_dist = model.module
     elif args.gpu is not None:
         print("=> use gpu id:", args.gpu)
@@ -319,10 +338,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-
-    optimizer = torch.optim.SGD(
-        model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay
-    )
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -444,7 +459,12 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
             # compute gradient and do SGD step
             optimizer.zero_grad()
-            loss.backward()
+
+            if args.apex:
+                with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
 
             if args.sparse_train:
                 for m in model.modules():
@@ -505,6 +525,9 @@ def validate(val_loader, model, criterion, args):
     progress = ProgressMeter(
         len(val_loader), [batch_time, losses, top1, top5], prefix="Test: "
     )
+
+    if args.apex:
+        model = model.module
 
     # switch to evaluate mode
     model.eval()
