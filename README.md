@@ -16,6 +16,7 @@ python main.py \
 --data-path /home/jovyan/fast-data/ \
 --save-path ./checkpoints/ \
 --dali \
+--apex \
 --sparse-train \
 --reg 0.00001
 
@@ -31,7 +32,8 @@ python main.py \
 --rank 0 \
 --data-path /home/jovyan/fast-data/ \
 --save-path ./checkpoints/ \
---dali
+--dali \
+--apex
 ```
 
 ## Eval Normal Model
@@ -62,6 +64,7 @@ python main.py \
 --data-path /home/jovyan/fast-data/ \
 --save-path ./checkpoints/ \
 --dali \
+--apex \
 --prune \
 --prune-rate 0.5
 ```
