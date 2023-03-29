@@ -15,6 +15,7 @@ import torch.utils.data.distributed
 import torchvision.models as models
 
 import apex
+from thop import profile
 
 import torch_pruning as tp
 from dali import get_dali_dataloader, get_torch_dataloader
@@ -278,7 +279,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.prune:
         print("=> do prune")
         print("=> prune rate:", args.prune_rate)
-        model = prune(model, args.prune_rate)
+        model = prune(model, args)
         print("=> do finetune")
 
     if args.sparse_train:
@@ -570,7 +571,7 @@ def validate(val_loader, model, criterion, args):
     return top1.avg
 
 
-def prune(model, prune_rate):
+def prune(model, args):
     model.cpu()
     inputs = torch.randn(1, 3, 224, 224)
 
@@ -592,30 +593,40 @@ def prune(model, prune_rate):
     iterative_steps = 10
 
     # 剪枝器
+    unwrapped_parameters = None
+    round_to = None
+    if isinstance(model, models.VisionTransformer):
+        round_to = model.encoder.layers[0].num_heads
+        unwrapped_parameters = [model.class_token, model.encoder.pos_embedding]
     pruner = tp.pruner.MagnitudePruner(
         model,
         inputs,
         global_pruning=False,  # If False, a uniform sparsity will be assigned to different layers.
         importance=imp,  # importance criterion for parameter selection
         iterative_steps=iterative_steps,  # the number of iterations to achieve target sparsity
-        ch_sparsity=prune_rate,  # 剪掉的通道百分比
+        ch_sparsity=args.prune_rate,  # 剪掉的通道百分比
+        round_to=round_to,
+        unwrapped_parameters=unwrapped_parameters,
         ignored_layers=ignored_layers,
     )
 
-    base_flops, base_nparams = tp.utils.count_ops_and_params(model, inputs)
+    base_flops, base_params = profile(model, inputs=(inputs,), verbose=False)
 
     # 每次迭代剪掉一些不重要的通道
     for i in range(iterative_steps):
         pruner.step()
+        if isinstance(model, models.VisionTransformer):
+            model.hidden_dim = model.conv_proj.out_channels
 
-        macs, nparams = tp.utils.count_ops_and_params(model, inputs)
+        flops, params = profile(model, inputs=(inputs,), verbose=False)
+
         print(
             "  Iter %d/%d, Params: %.2f M => %.2f M"
-            % (i + 1, iterative_steps, base_nparams / 1e6, nparams / 1e6)
+            % (i + 1, iterative_steps, base_params / 1e6, params / 1e6)
         )
         print(
             "  Iter %d/%d, FLOPs: %.2f M => %.2f M"
-            % (i + 1, iterative_steps, base_flops / 1e6, macs / 1e6)
+            % (i + 1, iterative_steps, base_flops / 1e6, flops / 1e6)
         )
         print('*' * 50)
 
