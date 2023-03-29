@@ -290,6 +290,7 @@ def main_worker(gpu, ngpus_per_node, args):
     )
 
     if args.apex:
+        print("=> use apex")
         apex.amp.register_float_function(torch, 'sigmoid')
         apex.amp.register_float_function(torch, 'softmax')
         model.cuda()
@@ -500,7 +501,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
             # compute gradient and do SGD step
             optimizer.zero_grad()
-            
+
             if args.apex:
                 with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
