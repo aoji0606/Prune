@@ -49,7 +49,7 @@ def parse_args():
         help="number of data loading workers (default: 32)",
     )
     parser.add_argument(
-        "--epochs", default=100, type=int, metavar="N", help="number of total epochs to run"
+        "--epochs", default=50, type=int, metavar="N", help="number of total epochs to run"
     )
     parser.add_argument(
         "--start-epoch",
