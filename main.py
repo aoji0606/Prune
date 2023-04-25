@@ -605,7 +605,7 @@ def prune(model, args):
         importance=imp,  # 重要性准则
         iterative_steps=iterative_steps,  # 迭代次数
         ch_sparsity=args.prune_rate,  # 剪掉的通道百分比
-        # ch_sparsity_dict={model.xxx: 0.x, model.xxx: 0.x},  # 特殊层剪枝率
+        # ch_sparsity_dict={model.backbone: 0.3, model.neck: 0.1, model.head: 0.1},  # 特殊层剪枝率
         round_to=round_to,  # 通道数舍入
         unwrapped_parameters=unwrapped_parameters,  # 自定义的nn.Parameter
         ignored_layers=ignored_layers  # 忽略剪枝的层
