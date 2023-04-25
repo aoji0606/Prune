@@ -34,10 +34,10 @@ class MetaPruner():
         global_pruning: bool = False,
         ch_sparsity: float = 0.5, # channel/dim sparsity
         ch_sparsity_dict: typing.Dict[nn.Module, float] = None,
-        max_ch_sparsity: float = 1.0, 
+        max_ch_sparsity: float = 1.0,
         iterative_steps: int = 1, # for iterative pruning
         iterative_sparsity_scheduler: typing.Callable = linear_scheduler,
-        ignored_layers: typing.List[nn.Module] = None, 
+        ignored_layers: typing.List[nn.Module] = None,
 
         # Advanced
         round_to: int = None, # round channels to 8x, 16x, ...
@@ -67,7 +67,7 @@ class MetaPruner():
             customized_pruners=customized_pruners,
         )
 
-        self.ignored_layers = []  
+        self.ignored_layers = []
         for layer in ignored_layers:
             self.ignored_layers.extend( list(layer.modules()) )
 
@@ -87,14 +87,15 @@ class MetaPruner():
         self.per_step_ch_sparsity = self.iterative_sparsity_scheduler(
             self.ch_sparsity, self.iterative_steps
         )
-        
+
         # The customized channel sparsity for different layers
-        self.ch_sparsity_dict = {}  
+        self.ch_sparsity_dict = {}
         if ch_sparsity_dict is not None:
             for module in ch_sparsity_dict:
                 sparsity = ch_sparsity_dict[module]
                 for submodule in module.modules():
-                    prunable_types = [ ops.type2class(prunable_type) for prunable_type in self.DG.REGISTERED_PRUNERS.keys() ]
+                    prunable_types = tuple([ops.type2class(prunable_type)
+                                            for prunable_type in self.DG.REGISTERED_PRUNERS.keys()])
                     if isinstance(submodule, prunable_types):
                         self.ch_sparsity_dict[submodule] = self.iterative_sparsity_scheduler(
                             sparsity, self.iterative_steps
@@ -106,7 +107,7 @@ class MetaPruner():
                 and m.groups>1 \
                     and m.groups!=m.out_channels:
                         self.channel_groups[m] = m.groups
-        
+
         if self.global_pruning:
             initial_total_channels = 0
             for group in self.get_all_groups():
@@ -125,16 +126,16 @@ class MetaPruner():
         """ Model regularizor
         """
         pass
-    
+
     def get_all_groups(self):
         visited_layers = []
         for m in self.DG.module2node.keys():
             if m in self.ignored_layers:
                 continue
-            
+
             if not isinstance(m, tuple(self.root_module_types)):
                 continue
-        
+
             pruner = self.DG.REGISTERED_PRUNERS.get(ops.module2type(m), None)
             if pruner is None or pruner.get_out_channels(m) is None:
                 continue
@@ -142,7 +143,7 @@ class MetaPruner():
             if m in visited_layers:
                 continue
 
-            layer_channels = pruner.get_out_channels(m) 
+            layer_channels = pruner.get_out_channels(m)
             group = self.DG.get_pruning_group(m, pruner.prune_out_channels, list(range(layer_channels)))
             prunable_group = True
             for dep, _ in group:
@@ -172,7 +173,7 @@ class MetaPruner():
             if function.is_out_channel_pruner(pruning_fn):
                 target_sparsity = self.get_target_sparsity(module)
                 layer_out_ch = self.DG.get_out_channels(module)
-                
+
                 if layer_out_ch < self.layer_init_out_ch[module] * (
                     1 - self.max_ch_sparsity
                 ) or layer_out_ch==1:
@@ -199,7 +200,7 @@ class MetaPruner():
     def prune_local(self):
         if self.current_step >= self.iterative_steps:
             return
-        
+
         for group in self.get_all_groups():
             # check pruning rate
             if self._check_sparsity(group):
@@ -218,7 +219,7 @@ class MetaPruner():
                 if self.round_to:
                     n_pruned = n_pruned - (n_pruned % self.round_to)
 
-                if n_pruned<=0: 
+                if n_pruned<=0:
                     continue
                 if ch_groups>1:
                     imp = imp[:len(imp)//ch_groups]
@@ -231,8 +232,8 @@ class MetaPruner():
                     module, pruning_fn, pruning_idxs.tolist())
                 if self.DG.check_pruning_group(group):
                     group.exec()
-            
-    
+
+
     def prune_global(self):
         if self.current_step >= self.iterative_steps:
             return
@@ -272,4 +273,4 @@ class MetaPruner():
             group = self.DG.get_pruning_group(module, pruning_fn, pruning_indices.tolist())
             if self.DG.check_pruning_group(group):
                 group.exec()
-    
+
