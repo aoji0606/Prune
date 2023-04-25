@@ -601,13 +601,14 @@ def prune(model, args):
     pruner = tp.pruner.MagnitudePruner(
         model,
         inputs,
-        global_pruning=False,  # If False, a uniform sparsity will be assigned to different layers.
-        importance=imp,  # importance criterion for parameter selection
-        iterative_steps=iterative_steps,  # the number of iterations to achieve target sparsity
+        global_pruning=False,  # 全局剪枝 按照全局channel排序 容易出错
+        importance=imp,  # 重要性准则
+        iterative_steps=iterative_steps,  # 迭代次数
         ch_sparsity=args.prune_rate,  # 剪掉的通道百分比
-        round_to=round_to,
-        unwrapped_parameters=unwrapped_parameters,
-        ignored_layers=ignored_layers,
+        # ch_sparsity_dict={model.xxx: 0.x, model.xxx: 0.x},  # 特殊层剪枝率
+        round_to=round_to,  # 通道数舍入
+        unwrapped_parameters=unwrapped_parameters,  # 自定义的nn.Parameter
+        ignored_layers=ignored_layers  # 忽略剪枝的层
     )
 
     base_flops, base_params = profile(model, inputs=(inputs,), verbose=False)
